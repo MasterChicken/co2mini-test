@@ -31,10 +31,10 @@ namespace co2mini_test
         private static readonly int[] DATA_SHUFFLE_ORDER = new int[] { 2, 4, 0, 7, 1, 6, 5, 3 };
         /// <summary>データの既定の長さ</summary>
         private static readonly int DATA_LENGTH = 8;
-        /// <summary>データがそろうまで待つシグナル</summary>
-        private static CountdownEvent WAIT_DATA_SIGNAL = null;
         /// <summary>インバリアントカルチャ</summary>
         private static readonly System.Globalization.CultureInfo INVALIANT_CULTURE = System.Globalization.CultureInfo.InvariantCulture;
+        /// <summary>データが揃うのを待つ時間</summary>
+        private static readonly TimeSpan DATA_TIMEOUT = TimeSpan.FromSeconds(10);
 
         private enum ReadDataType
         {
@@ -137,6 +137,10 @@ namespace co2mini_test
                 int? valueCO2 = null;
                 double? valueTemp = null;
 
+                CountdownEvent waitDataSignal = null;
+                System.Timers.Timer timer = null;
+                DateTime startTime = DateTime.MinValue;
+
                 device.MonitorDeviceEvents = true;
                 device.OpenDevice();
                 try
@@ -146,10 +150,10 @@ namespace co2mini_test
                         throw new Exception("writing feature report failed");
                     }
 
+                    // データが来た際のコールバック
                     void OnReport(HidReport report)
                     {
-                        if (!device.IsOpen) { return; }
-                        if (!device.IsConnected) { return; }
+                        if (!device.IsOpen || !device.IsConnected || waitDataSignal.IsSet) { return; }
 
                         if (report.Exists)
                         {
@@ -177,7 +181,7 @@ namespace co2mini_test
                         if (valueCO2.HasValue && valueTemp.HasValue)
                         {
                             // データが揃った
-                            WAIT_DATA_SIGNAL.Signal();
+                            waitDataSignal.Signal();
                         }
                         else
                         {
@@ -186,10 +190,38 @@ namespace co2mini_test
                         }
                     }
 
-                    WAIT_DATA_SIGNAL = new CountdownEvent(1);
+                    waitDataSignal = new CountdownEvent(1);
 
+                    timer = new System.Timers.Timer()
+                    {
+                        Enabled = false,
+                        AutoReset = false,
+                        Interval = 1000,
+                    };
+                    timer.Elapsed += (sender, e) =>
+                    {
+                        timer.Enabled = false;
+                        if (waitDataSignal.IsSet) { return; }
+
+                        if ((e.SignalTime - startTime) > DATA_TIMEOUT)
+                        {
+                            // 時間切れ
+                            waitDataSignal.Signal();
+                        }
+                        else
+                        {
+                            // まだ待つ
+                            timer.Enabled = true;
+                        }
+                    };
+
+                    startTime = DateTime.Now;
+                    timer.Enabled = true;
                     device.ReadReport(OnReport);
-                    WAIT_DATA_SIGNAL.Wait();
+
+                    waitDataSignal.Wait();
+                    timer.Enabled = false;
+
 
                 }
                 finally
@@ -235,6 +267,5 @@ namespace co2mini_test
             }
 
         }
-
     }
 }
